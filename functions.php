@@ -802,3 +802,216 @@ function twentytwenty_get_elements_array() {
 	 */
 	return apply_filters( 'twentytwenty_get_elements_array', $elements );
 }
+
+
+
+// Custom work Starts from here ......
+
+
+/**
+ * Add a new section "Custom offer section" in woocommerce panel
+ */
+function add_custom_section_under_checkout($wp_customize) {
+    
+	if (class_exists('WooCommerce') && current_user_can('manage_woocommerce')) {
+
+		$wp_customize->add_section('custom_offer_section', array(
+			'title'    => __('Offer Section', 'twentytwenty'),
+			'priority' => 30,
+			'panel'    => 'woocommerce',
+		));
+
+		// Add settings and controls for your custom options within this section
+		$wp_customize->add_setting('gift_product_id', array(
+			'default'           => '',
+			'sanitize_callback' => 'sanitize_text_field',
+		));
+
+		$wp_customize->add_control('gift_product_id', array(
+			'label'   => __('Gift Product ID', 'twentytwenty'),
+			'section' => 'custom_offer_section',
+			'type'    => 'text',
+		));
+
+		// Add settings and controls for your custom options within this section
+		$wp_customize->add_setting('special_cat_id', array(
+			'default'           => '',
+			'sanitize_callback' => 'sanitize_text_field',
+		));
+
+		$wp_customize->add_control('special_cat_id', array(
+			'label'   => __('Special Categroy ID', 'twentytwenty'),
+			'section' => 'custom_offer_section',
+			'type'    => 'text',
+		));
+	}
+}
+
+add_action('customize_register', 'add_custom_section_under_checkout');
+
+
+
+function get_gifts_detail(){
+
+	$special_cat_id = get_theme_mod('special_cat_id');
+
+	$gift_product_id = get_theme_mod('gift_product_id');
+
+	if ($special_cat_id || $gift_product_id ) {
+		// Add the value to the array
+		$gift = array($gift_product_id, $special_cat_id);
+	}else{
+		$gift = array();
+	}
+
+	return $gift;
+
+}
+
+
+// add gift product to cart when special categories product added to cart
+function add_gift_product_to_cart($cart_item_key, $product_id, $quantity, $variation_id, $variation, $cart_item_data) {
+    
+	$offer = get_gifts_detail();
+
+	if( empty( $offer ) ) return;
+
+	$offer_product_id = $offer[0];
+	$offer_category_id = $offer[1];
+
+    $product = wc_get_product($product_id);
+	
+    $categories = $product->get_category_ids();
+
+    if (in_array( $offer_category_id , $categories)) {
+		WC()->cart->add_to_cart($offer_product_id);
+    }
+
+}
+
+add_action('woocommerce_add_to_cart', 'add_gift_product_to_cart', 10, 6);
+
+
+// Disable remove link of gift product
+add_filter('woocommerce_cart_item_remove_link', 'disable_offer_product_removal', 10, 2);
+
+function disable_offer_product_removal($link, $cart_item_key) {
+	
+	$offer = get_gifts_detail();
+
+    $cart_item = WC()->cart->get_cart()[$cart_item_key];
+
+    if ( in_array($cart_item['data']->get_id(), $offer) ) {
+        return '';
+    }
+
+    // For other products, return the regular removal link
+    return $link;
+}
+
+
+// Prevent Gift product Quantity Updation
+function prevent_gift_quantity_update($passed, $cart_item_key, $values, $quantity) {
+
+	$offer = get_gifts_detail();
+
+	$cart_item = WC()->cart->get_cart()[$cart_item_key];
+	
+    if ( in_array($cart_item['data']->get_id(), $offer) ) {
+        // Prevent the quantity update
+        wc_add_notice(__('Quantity update for the "Gift" product is not allowed.', 'twentytwenty'), 'error');
+        return false;
+    }
+	
+    return $passed;
+}
+
+add_filter('woocommerce_update_cart_validation', 'prevent_gift_quantity_update', 10, 4);
+
+
+
+// Disable Quantity field for gift product
+function disable_gift_product_quantity_field($product_quantity, $cart_item_key, $cart_item) {
+	
+	$offer = get_gifts_detail();
+
+	$cart_item = WC()->cart->get_cart()[$cart_item_key];
+	
+    if ( in_array($cart_item['data']->get_id(), $offer) ) {
+        // Disable the quantity field for the 'Offer' product
+        $product_quantity = '<input type="text" name="cart[' . $cart_item_key . '][qty]" value="' . $cart_item['quantity'] . '" size="4" readonly style="width:80px" />';
+    }
+
+    return $product_quantity;
+
+}
+
+add_filter('woocommerce_cart_item_quantity', 'disable_gift_product_quantity_field', 10, 3);
+
+
+
+// redirect to home page if someone access to gift product directly
+function redirect_to_home_if_gift_access() {
+
+	$offer = get_gifts_detail();
+
+	if( empty( $offer ) ) return;
+
+    $offer_product_id = $offer[0];
+	
+    if (is_singular('product') && get_the_ID() == $offer_product_id) {
+        wp_safe_redirect(home_url());
+        exit();
+    }
+}
+
+add_action('template_redirect', 'redirect_to_home_if_gift_access');
+
+
+
+
+// update gift product according to cart update
+add_action('woocommerce_before_calculate_totals', 'update_gift_product_quantity' , 999 , 1);
+
+function update_gift_product_quantity($cart) {
+
+	if ( is_admin() && ! defined( 'DOING_AJAX' ) ) 
+        return;
+
+    if ( did_action( 'woocommerce_before_calculate_totals' ) >= 2 ) 
+        return;
+
+	$offer = get_gifts_detail();
+
+	if( empty( $offer ) ) return;
+
+    $special_category_id = $offer[1];
+    $gift_product_quantity = 0;
+    $offer_product_in_cart = false;
+    $offer_product_cart_item_key = '';
+
+    foreach ($cart->get_cart() as $cart_item_key => $cart_item) {
+        $product = $cart_item['data'];
+		
+        // Get the product categories
+        $product_categories = wp_get_post_terms($product->get_id(), 'product_cat', array("fields" => "ids"));
+
+        // Check if the product belongs to the special category
+        if (in_array($special_category_id, $product_categories)) {
+            $gift_product_quantity += $cart_item['quantity'];
+        }
+
+        // Check if the 'gift' product is in the cart
+        if ( in_array( $product->get_id(), $offer) ) {
+            $offer_product_in_cart = true;
+            $offer_product_cart_item_key = $cart_item_key;
+        }
+    }
+	
+    if ($offer_product_in_cart) {
+		// Update the 'gift' product quantity using the cart item key
+        $cart_item = $cart->get_cart()[$offer_product_cart_item_key];
+        $cart_item['quantity'] = $gift_product_quantity;
+        $cart->cart_contents[$offer_product_cart_item_key] = $cart_item;
+    }
+}
